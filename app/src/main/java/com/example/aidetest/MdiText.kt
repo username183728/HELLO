@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Typeface
 import android.text.SpannableStringBuilder
 import android.text.Spanned
+import android.text.TextPaint
+import android.text.style.MetricAffectingSpan
 import android.text.style.RelativeSizeSpan
 import android.widget.TextView
 
@@ -82,4 +84,10 @@ fun TextView.asMdi(name: String) {
     typeface = MdiText.typeface(context)
     text = MdiGlyphs.glyph(name)
     includeFontPadding = false
+}
+
+/** Span yang menerapkan typeface font ikon MDI pada teks. */
+class MdiSpan(private val typeface: Typeface) : MetricAffectingSpan() {
+    override fun updateDrawState(paint: TextPaint) { paint.typeface = typeface }
+    override fun updateMeasureState(paint: TextPaint) { paint.typeface = typeface }
 }

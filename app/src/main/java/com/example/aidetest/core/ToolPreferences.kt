@@ -6,7 +6,7 @@ import android.content.Context
 class ToolPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("mytools_tool_preferences", Context.MODE_PRIVATE)
 
-    fun isFavorite(id: String): Boolean = prefs.getStringSet(KEY_FAVORITES, emptySet()).contains(id)
+    fun isFavorite(id: String): Boolean = prefs.getStringSet(KEY_FAVORITES, emptySet())?.contains(id) == true
 
     fun setFavorite(id: String, favorite: Boolean) {
         val set = prefs.getStringSet(KEY_FAVORITES, emptySet()).orEmpty().toMutableSet()
@@ -14,7 +14,7 @@ class ToolPreferences(context: Context) {
         prefs.edit().putStringSet(KEY_FAVORITES, set).apply()
     }
 
-    fun isHidden(id: String): Boolean = prefs.getStringSet(KEY_HIDDEN, emptySet()).contains(id)
+    fun isHidden(id: String): Boolean = prefs.getStringSet(KEY_HIDDEN, emptySet())?.contains(id) == true
 
     fun setHidden(id: String, hidden: Boolean) {
         val set = prefs.getStringSet(KEY_HIDDEN, emptySet()).orEmpty().toMutableSet()
