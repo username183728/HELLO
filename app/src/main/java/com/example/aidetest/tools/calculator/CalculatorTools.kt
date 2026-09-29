@@ -112,7 +112,7 @@ fun MainActivity.calculatorHub(selected: String = calculatorSelectedMode) {
             gravity = Gravity.CENTER_VERTICAL
         }
         val arrow = TextView(this).apply {
-            text = "⌄"
+            asMdi("chevron-down")
             textSize = 22f
             setTextColor(textMuted)
             gravity = Gravity.CENTER

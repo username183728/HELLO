@@ -162,11 +162,11 @@
             android:paddingEnd="4dp">
 
             <LinearLayout android:id="@+id/navHome" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
-                <ImageView android:id="@+id/navHomeIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_home" android:contentDescription="Beranda" />
+                <com.example.aidetest.MdiIconView android:id="@+id/navHomeIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Beranda" />
                 <TextView android:id="@+id/navHomeLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Beranda" android:textColor="#17202A" android:textSize="10sp" />
             </LinearLayout>
             <LinearLayout android:id="@+id/navTools" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
-                <ImageView android:id="@+id/navToolsIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_grid" android:contentDescription="Tools" />
+                <com.example.aidetest.MdiIconView android:id="@+id/navToolsIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Tools" />
                 <TextView android:id="@+id/navToolsLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Tools" android:textColor="#8A96A3" android:textSize="10sp" />
             </LinearLayout>
 
@@ -185,11 +185,11 @@
                 android:contentDescription="Tambah" />
 
             <LinearLayout android:id="@+id/navFavorite" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
-                <ImageView android:id="@+id/navFavoriteIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_star" android:contentDescription="Favorit" />
+                <com.example.aidetest.MdiIconView android:id="@+id/navFavoriteIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Favorit" />
                 <TextView android:id="@+id/navFavoriteLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Favorit" android:textColor="#8A96A3" android:textSize="10sp" />
             </LinearLayout>
             <LinearLayout android:id="@+id/navSettings" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
-                <ImageView android:id="@+id/navSettingsIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_settings" android:contentDescription="Pengaturan" />
+                <com.example.aidetest.MdiIconView android:id="@+id/navSettingsIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Pengaturan" />
                 <TextView android:id="@+id/navSettingsLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Pengaturan" android:textColor="#8A96A3" android:textSize="10sp" />
             </LinearLayout>
         </LinearLayout>

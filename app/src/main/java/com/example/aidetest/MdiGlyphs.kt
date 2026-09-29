@@ -4,6 +4,15 @@ object MdiGlyphs {
     private fun mdi(codePoint: Int): String = String(Character.toChars(codePoint))
 
     private val map: Map<String, String> = mapOf(
+        "auto-fix" to mdi(0xF0068),
+        "backspace-outline" to mdi(0xF0B5C),
+        "circle-slice-8" to mdi(0xF0AA5),
+        "fullscreen" to mdi(0xF0293),
+        "lightbulb-outline" to mdi(0xF0336),
+        "music-note" to mdi(0xF0387),
+        "qrcode-scan" to mdi(0xF0433),
+        "radiobox-marked" to mdi(0xF043E),
+        "video-outline" to mdi(0xF0BDC),
         "access-point-network" to mdi(0xF0002),
         "account-outline" to mdi(0xF0013),
         "account-search-outline" to mdi(0xF0935),
@@ -227,6 +236,7 @@ object MdiGlyphs {
         "source-repository" to mdi(0xF0CCF),
         "speedometer" to mdi(0xF04C5),
         "star" to mdi(0xF04CE),
+        "star-outline" to mdi(0xF04D2),
         "stop" to mdi(0xF04DB),
         "swap-horizontal" to mdi(0xF04E1),
         "swap-horizontal-bold" to mdi(0xF0BCD),

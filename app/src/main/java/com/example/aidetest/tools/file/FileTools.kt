@@ -91,7 +91,7 @@ fun MainActivity.fileManager(dir: File) {
         content.addView(toolHeader("File Manager", dir.name, "folder-multiple-outline"), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
 
         val path = TextView(this).apply {
-            text = "⌂  ${dir.absolutePath}"
+            text = MdiText.iconize(context, "⌂  ${dir.absolutePath}")
             textSize = 11f
             setTextColor(textMuted)
             setPadding(dp(12), dp(10), dp(12), dp(10))

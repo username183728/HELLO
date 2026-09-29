@@ -39,4 +39,23 @@ class MdiIconView @JvmOverloads constructor(
             Typeface.createFromAsset(context.assets, FONT)
         }
     }
+
+    /** Ganti ikon dengan animasi "pop" halus (dipakai untuk favorit dan navigasi). */
+    fun popTo(name: String, overshoot: Float = 1.25f) {
+        if (glyphName == name) return
+        setIconName(name)
+        animate().cancel()
+        scaleX = 0.6f; scaleY = 0.6f
+        animate().scaleX(1f).scaleY(1f).setDuration(320L)
+            .setInterpolator(android.view.animation.OvershootInterpolator(overshoot)).start()
+    }
+
+    /** Efek membal singkat tanpa mengganti ikon. */
+    fun bounce() {
+        animate().cancel()
+        animate().scaleX(1.18f).scaleY(1.18f).setDuration(90L).withEndAction {
+            animate().scaleX(1f).scaleY(1f).setDuration(220L)
+                .setInterpolator(android.view.animation.OvershootInterpolator(2.2f)).start()
+        }.start()
+    }
 }
