@@ -1,0 +1,1001 @@
+diff -ruN orig/app/src/main/AndroidManifest.xml proj/app/src/main/AndroidManifest.xml
+--- orig/app/src/main/AndroidManifest.xml	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/AndroidManifest.xml	2026-09-29 11:08:54.334640296 +0000
+@@ -13,6 +13,7 @@
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+     <uses-permission android:name="android.permission.VIBRATE" />
+ 
+     <application
+@@ -42,6 +43,11 @@
+             android:exported="false"
+             android:foregroundServiceType="mediaProjection" />
+ 
++        <service
++            android:name=".GithubUploadService"
++            android:exported="false"
++            android:foregroundServiceType="dataSync" />
++
+         <receiver android:name=".ReminderReceiver" android:exported="false">
+             <intent-filter>
+                 <action android:name="android.intent.action.BOOT_COMPLETED" />
+diff -ruN orig/app/src/main/java/com/example/aidetest/GithubUploadNotifier.kt proj/app/src/main/java/com/example/aidetest/GithubUploadNotifier.kt
+--- orig/app/src/main/java/com/example/aidetest/GithubUploadNotifier.kt	1970-01-01 00:00:00.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/GithubUploadNotifier.kt	2026-09-29 11:08:54.312315370 +0000
+@@ -0,0 +1,132 @@
++package com.example.aidetest
++
++import android.Manifest
++import android.app.Notification
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.app.Service
++import android.content.Context
++import android.content.Intent
++import android.content.pm.PackageManager
++import android.content.pm.ServiceInfo
++import android.os.Build
++import android.os.IBinder
++import androidx.core.app.NotificationCompat
++import androidx.core.app.NotificationManagerCompat
++import androidx.core.content.ContextCompat
++
++/** Notifikasi progres + hasil upload GitHub, agar tetap terlihat saat aplikasi ditinggalkan. */
++object GithubUploadNotifier {
++    const val CH_PROGRESS = "gh_upload_progress"
++    const val CH_DONE = "gh_upload_done"
++    const val ID_PROGRESS = 7101
++    const val ID_DONE = 7102
++    const val EXTRA_OPEN = "open_github_publisher"
++    private var lastPostAt = 0L
++    private var lastKey = ""
++
++    private fun ensureChannels(ctx: Context) {
++        if (Build.VERSION.SDK_INT < 26) return
++        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
++        nm.createNotificationChannel(NotificationChannel(CH_PROGRESS, "Proses upload GitHub", NotificationManager.IMPORTANCE_LOW).apply {
++            description = "Progres upload project ke GitHub"
++            setShowBadge(false)
++        })
++        nm.createNotificationChannel(NotificationChannel(CH_DONE, "Upload GitHub selesai", NotificationManager.IMPORTANCE_HIGH).apply {
++            description = "Pemberitahuan saat upload GitHub selesai atau gagal"
++        })
++    }
++
++    private fun canNotify(ctx: Context): Boolean =
++        Build.VERSION.SDK_INT < 33 ||
++            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
++
++    private fun openIntent(ctx: Context, requestCode: Int): PendingIntent {
++        val i = Intent(ctx, MainActivity::class.java).apply {
++            putExtra(EXTRA_OPEN, true)
++            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
++        }
++        return PendingIntent.getActivity(
++            ctx, requestCode, i,
++            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
++        )
++    }
++
++    fun buildProgress(ctx: Context, text: String, percent: Int): Notification {
++        ensureChannels(ctx)
++        return NotificationCompat.Builder(ctx, CH_PROGRESS)
++            .setSmallIcon(android.R.drawable.stat_sys_upload)
++            .setContentTitle("Mengunggah ke GitHub")
++            .setContentText(text)
++            .setProgress(100, percent.coerceIn(0, 100), percent <= 0)
++            .setOngoing(true)
++            .setOnlyAlertOnce(true)
++            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
++            .setContentIntent(openIntent(ctx, 7201))
++            .build()
++    }
++
++    /** Perbarui notifikasi progres (dibatasi agar tidak spam). */
++    fun progress(ctx: Context, text: String, percent: Int) {
++        val key = "$text|$percent"
++        val now = System.currentTimeMillis()
++        if (key == lastKey || now - lastPostAt < 700L) return
++        lastKey = key; lastPostAt = now
++        if (!canNotify(ctx)) return
++        runCatching { NotificationManagerCompat.from(ctx).notify(ID_PROGRESS, buildProgress(ctx, text, percent)) }
++    }
++
++    fun done(ctx: Context, success: Boolean, title: String, text: String) {
++        if (!canNotify(ctx)) return
++        ensureChannels(ctx)
++        val n = NotificationCompat.Builder(ctx, CH_DONE)
++            .setSmallIcon(if (success) android.R.drawable.stat_sys_upload_done else android.R.drawable.stat_notify_error)
++            .setContentTitle(title)
++            .setContentText(text)
++            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
++            .setAutoCancel(true)
++            .setPriority(NotificationCompat.PRIORITY_HIGH)
++            .setDefaults(NotificationCompat.DEFAULT_ALL)
++            .setContentIntent(openIntent(ctx, 7202))
++            .build()
++        runCatching { NotificationManagerCompat.from(ctx).notify(ID_DONE, n) }
++    }
++
++    fun cancelDone(ctx: Context) {
++        runCatching { NotificationManagerCompat.from(ctx).cancel(ID_DONE) }
++    }
++
++    fun startKeepAlive(ctx: Context) {
++        lastKey = ""; lastPostAt = 0L
++        runCatching {
++            val i = Intent(ctx, GithubUploadService::class.java)
++            if (Build.VERSION.SDK_INT >= 26) ctx.startForegroundService(i) else ctx.startService(i)
++        }
++    }
++
++    fun stopKeepAlive(ctx: Context) {
++        runCatching { ctx.stopService(Intent(ctx, GithubUploadService::class.java)) }
++        runCatching { NotificationManagerCompat.from(ctx).cancel(ID_PROGRESS) }
++    }
++}
++
++/**
++ * Service foreground ringan: hanya menjaga proses tetap hidup selama upload berjalan
++ * saat pengguna keluar dari aplikasi. Logika upload tetap di MainActivity.
++ */
++class GithubUploadService : Service() {
++    override fun onBind(intent: Intent?): IBinder? = null
++
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++        val n = GithubUploadNotifier.buildProgress(this, "Menyiapkan upload…", 0)
++        runCatching {
++            if (Build.VERSION.SDK_INT >= 29) {
++                startForeground(GithubUploadNotifier.ID_PROGRESS, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
++            } else {
++                startForeground(GithubUploadNotifier.ID_PROGRESS, n)
++            }
++        }
++        return START_NOT_STICKY
++    }
++}
+diff -ruN orig/app/src/main/java/com/example/aidetest/MainActivity.kt proj/app/src/main/java/com/example/aidetest/MainActivity.kt
+--- orig/app/src/main/java/com/example/aidetest/MainActivity.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/MainActivity.kt	2026-09-29 11:11:48.176159237 +0000
+@@ -425,6 +425,9 @@
+         findViewById<View>(R.id.navHome).setOnClickListener { navigateRoot { showHome() } }
+         findViewById<View>(R.id.navTools).setOnClickListener { navigateRoot { showAllTools() } }
+         navFavorite = findViewById(R.id.navFavorite)
++        listOf(R.id.navHomeIcon to "home-outline", R.id.navToolsIcon to "view-grid-outline",
++            R.id.navFavoriteIcon to "star-outline", R.id.navSettingsIcon to "cog-outline")
++            .forEach { (id, glyph) -> findViewById<MdiIconView>(id).setIconName(glyph) }
+         navFavorite.setOnClickListener { navigateRoot { showFavorites() } }
+         findViewById<View>(R.id.navSettings).setOnClickListener { navigateRoot { showSettings() } }
+         listOf(R.id.navHome, R.id.navTools, R.id.navFavorite, R.id.navSettings, R.id.navAdd).forEach { id ->
+@@ -453,9 +456,22 @@
+         }
+     }
+ 
++    override fun onStart() {
++        super.onStart()
++        appInForeground = true
++        GithubUploadNotifier.cancelDone(this)
++    }
++
++    override fun onStop() {
++        appInForeground = false
++        super.onStop()
++    }
++
+     override fun onNewIntent(intent: Intent?) {
+         super.onNewIntent(intent); setIntent(intent)
+-        if (intent?.getBooleanExtra("open_finance", false) == true) {
++        if (intent?.getBooleanExtra(GithubUploadNotifier.EXTRA_OPEN, false) == true) {
++            enterApp(); githubZipTool()
++        } else if (intent?.getBooleanExtra("open_finance", false) == true) {
+             enterApp(); financeReaderTool()
+         } else if (intent?.getBooleanExtra("open_iot", false) == true) {
+             enterApp(); openTool("iotdashboard")
+@@ -1218,7 +1234,7 @@
+ 
+     internal fun configureActionForPage(name: String) {
+         editorMore.visibility = View.GONE
+-        action.text = "⋮"
++        action.asMdi("dots-vertical")
+         action.textSize = 25f
+         action.contentDescription = "Menu tool"
+         action.setOnClickListener {
+@@ -1388,6 +1404,19 @@
+         } else {
+             content.setPadding(dp(10), dp(4), dp(10), dp(14))
+         }
++        playPageEnter(isRoot)
++    }
++
++    /** Transisi halus saat halaman berganti: fade + naik ringan (root) atau geser dari kanan (detail). */
++    internal fun playPageEnter(isRoot: Boolean) {
++        content.animate().cancel()
++        content.alpha = 0f
++        if (isRoot) { content.translationX = 0f; content.translationY = dp(14).toFloat() }
++        else { content.translationY = 0f; content.translationX = dp(22).toFloat() }
++        content.animate().alpha(1f).translationX(0f).translationY(0f)
++            .setDuration(260L)
++            .setInterpolator(android.view.animation.DecelerateInterpolator(1.6f))
++            .start()
+     }
+ 
+     internal fun label(text: String, size: Float = 16f, bold: Boolean = false): TextView = TextView(this).apply {
+@@ -1408,14 +1437,16 @@
+     internal fun animateToolItem(view: View, index: Int = 0) {
+         view.animate().cancel()
+         view.alpha = 0f
+-        view.translationY = dp(12).toFloat()
+-        val delay = (index.coerceAtMost(7) * 34L)
++        view.translationY = dp(16).toFloat()
++        view.scaleX = 0.96f; view.scaleY = 0.96f
++        val delay = (index.coerceAtMost(9) * 40L)
+         view.animate()
+             .alpha(1f)
+             .translationY(0f)
++            .scaleX(1f).scaleY(1f)
+             .setStartDelay(delay)
+-            .setDuration(230L)
+-            .setInterpolator(android.view.animation.DecelerateInterpolator(1.5f))
++            .setDuration(300L)
++            .setInterpolator(android.view.animation.OvershootInterpolator(0.8f))
+             .start()
+     }
+ 
+@@ -1499,8 +1530,8 @@
+         texts.addView(label(name, if (compact) 14f else 15f, true))
+         texts.addView(subLabel("Buka alat", 11f))
+         card.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+-        val arrow = TextView(this).apply {
+-            text = "›"; textSize = 24f; setTextColor(textMuted); gravity = Gravity.CENTER
++        val arrow = MdiIconView(this).apply {
++            setIconName("chevron-right"); setIconSize(22f); setTextColor(textMuted)
+             contentDescription = "Buka $name"
+         }
+         card.addView(arrow, LinearLayout.LayoutParams(dp(30), -1))
+@@ -1849,14 +1880,14 @@
+         }
+         top.addView(icon, LinearLayout.LayoutParams(dp(38), dp(38)))
+         top.addView(Space(this), LinearLayout.LayoutParams(0, 1, 1f))
+-        top.addView(TextView(this).apply {
+-            text = if (isFavorite(id)) "★" else "☆"; textSize = 19f; gravity = Gravity.CENTER
++        top.addView(MdiIconView(this).apply {
++            setIconName(if (isFavorite(id)) "star" else "star-outline"); setIconSize(20f)
+             setTextColor(textMain); setPadding(dp(2),0,dp(2),0)
+             contentDescription = if (isFavorite(id)) "Hapus $name dari favorit" else "Tambahkan $name ke favorit"
+-            setOnClickListener { toggleFavorite(id); text = if (isFavorite(id)) "★" else "☆"; contentDescription = if (isFavorite(id)) "Hapus $name dari favorit" else "Tambahkan $name ke favorit" }
++            setOnClickListener { toggleFavorite(id); popTo(if (isFavorite(id)) "star" else "star-outline"); contentDescription = if (isFavorite(id)) "Hapus $name dari favorit" else "Tambahkan $name ke favorit" }
+         }, LinearLayout.LayoutParams(dp(30), dp(38)))
+         top.addView(TextView(this).apply {
+-            text = "›"
++            asMdi("chevron-right")
+             textSize = 22f
+             setTextColor(textMuted)
+             gravity = Gravity.CENTER
+@@ -1993,7 +2024,7 @@
+             applyInteractiveSurface(empty, 20, 1)
+             empty.addView(MdiIconView(this).apply { setIconName("star-outline"); setIconSize(38f); setTextColor(textMuted) }, LinearLayout.LayoutParams(-1, dp(50)))
+             empty.addView(label("Belum ada favorit", 16f, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(2)) })
+-            empty.addView(subLabel("Tekan ☆ pada kartu tool untuk menyimpannya.", 11f).apply { gravity = Gravity.CENTER })
++            empty.addView(subLabel("Ketuk ikon bintang pada kartu tool untuk menyimpannya.", 11f).apply { gravity = Gravity.CENTER })
+             content.addView(empty, LinearLayout.LayoutParams(-1, dp(170)).apply { topMargin = dp(6) })
+             return
+         }
+@@ -2027,13 +2058,17 @@
+         )
+         labels.forEach { (id, selected) -> findViewById<TextView>(id).setTextColor(if (selected) active else inactive) }
+         val iconMap = listOf(
+-            R.id.navHomeIcon to (name == "home"),
+-            R.id.navToolsIcon to (name == "all"),
+-            R.id.navFavoriteIcon to (name == "favorites"),
+-            R.id.navSettingsIcon to (name == "settings")
++            Triple(R.id.navHomeIcon, "home", "home-outline") to (name == "home"),
++            Triple(R.id.navToolsIcon, "view-grid", "view-grid-outline") to (name == "all"),
++            Triple(R.id.navFavoriteIcon, "star", "star-outline") to (name == "favorites"),
++            Triple(R.id.navSettingsIcon, "cog", "cog-outline") to (name == "settings")
+         )
+-        iconMap.forEach { (id, selected) ->
+-            (findViewById<ImageView>(id).drawable)?.setTint(if (selected) active else inactive)
++        iconMap.forEach { (spec, selected) ->
++            val (id, filled, outline) = spec
++            val icon = findViewById<MdiIconView>(id)
++            icon.setTextColor(if (selected) active else inactive)
++            if (selected) icon.popTo(filled) else icon.setIconName(outline)
++            icon.animate().translationY(if (selected) -dp(2).toFloat() else 0f).setDuration(180L).start()
+         }
+     }
+ 
+@@ -2048,10 +2083,9 @@
+         applyInteractiveSurface(card, 17, 2)
+         addPressFeedback(card)
+         card.setOnClickListener { showCategory(name, ids) }
+-        val ico = TextView(this).apply {
+-            text = icon
+-            textSize = 20f
+-            gravity = Gravity.CENTER
++        val ico = MdiIconView(this).apply {
++            setIconName(if (MdiGlyphs.has(icon)) icon else "apps")
++            setIconSize(21f)
+             setTextColor(textMain)
+             background = bg(if (isDarkTheme) Color.rgb(42,42,46) else Color.rgb(242,245,247), 14)
+         }
+@@ -2060,7 +2094,7 @@
+         texts.addView(label(name, 14f, true))
+         texts.addView(subLabel(desc, 11f))
+         card.addView(texts, LinearLayout.LayoutParams(0,-2,1f))
+-        card.addView(TextView(this).apply { text="›"; textSize=24f; setTextColor(textMuted); gravity=Gravity.CENTER; contentDescription="Buka kategori $name" }, LinearLayout.LayoutParams(dp(30), dp(46)))
++        card.addView(MdiIconView(this).apply { setIconName("chevron-right"); setIconSize(22f); setTextColor(textMuted); contentDescription="Buka kategori $name" }, LinearLayout.LayoutParams(dp(30), dp(46)))
+         content.addView(card, LinearLayout.LayoutParams(-1, dp(72)).apply { bottomMargin = dp(8) })
+     }
+ 
+@@ -2123,7 +2157,7 @@
+         val hiddenCount = ToolRegistry.tools.count { toolPreferences.isHidden(it.id) }
+         stats.addView(subLabel("${visibleRegistry.size} tools • $categoryCount kategori", 11f), LinearLayout.LayoutParams(0, -2, 1f))
+         stats.addView(TextView(this).apply {
+-            text = "★ $favoriteCount   ◌ $hiddenCount tersembunyi"
++            text = "$favoriteCount favorit  •  $hiddenCount tersembunyi"
+             textSize = 11f
+             setTextColor(textMuted)
+             gravity = Gravity.CENTER_VERTICAL
+@@ -2146,7 +2180,7 @@
+         items.forEachIndexed { index, info ->
+             val card = toolCenterCard(info)
+             content.addView(card, LinearLayout.LayoutParams(-1, dp(74)).apply { bottomMargin = dp(7) })
+-            if (index < 8) animateToolItem(card, index)
++            if (index < 10) animateToolItem(card, index)
+         }
+         if (items.isEmpty()) {
+             val empty = LinearLayout(this).apply {
+@@ -2198,25 +2232,25 @@
+         textBox.addView(subLabel(info.category, 10.5f).apply { setPadding(0, 0, 0, 0) })
+         card.addView(textBox, LinearLayout.LayoutParams(0, -2, 1f))
+ 
+-        val star = TextView(this).apply {
+-            text = if (toolPreferences.isFavorite(info.id)) "★" else "☆"
+-            textSize = 20f
+-            gravity = Gravity.CENTER
+-            setTextColor(if (toolPreferences.isFavorite(info.id)) textMain else textMuted)
+-            contentDescription = if (toolPreferences.isFavorite(info.id)) "Hapus dari favorit" else "Tambahkan ke favorit"
++        val star = MdiIconView(this).apply {
++            val fav = toolPreferences.isFavorite(info.id)
++            setIconName(if (fav) "star" else "star-outline")
++            setIconSize(21f)
++            setTextColor(if (fav) textMain else textMuted)
++            contentDescription = if (fav) "Hapus dari favorit" else "Tambahkan ke favorit"
+             setPadding(dp(4), 0, dp(4), 0)
+             setOnClickListener {
+                 toggleToolCenterFavorite(info.id)
+-                text = if (toolPreferences.isFavorite(info.id)) "★" else "☆"
+-                setTextColor(if (toolPreferences.isFavorite(info.id)) textMain else textMuted)
++                val now = toolPreferences.isFavorite(info.id)
++                popTo(if (now) "star" else "star-outline")
++                setTextColor(if (now) textMain else textMuted)
+             }
+         }
+         card.addView(star, LinearLayout.LayoutParams(dp(40), dp(48)))
+ 
+-        val more = TextView(this).apply {
+-            text = "⋮"
+-            textSize = 22f
+-            gravity = Gravity.CENTER
++        val more = MdiIconView(this).apply {
++            setIconName("dots-vertical")
++            setIconSize(22f)
+             setTextColor(textMuted)
+             contentDescription = "Opsi ${info.name}"
+             setOnClickListener { showToolCenterOptions(info) }
+@@ -2244,7 +2278,7 @@
+         }
+         fun option(textValue: String, action: () -> Unit) {
+             box.addView(TextView(this).apply {
+-                text = textValue
++                text = MdiText.iconize(this@MainActivity, textValue)
+                 textSize = 14f
+                 setTextColor(textMain)
+                 gravity = Gravity.CENTER_VERTICAL
+@@ -2253,7 +2287,7 @@
+                 setOnClickListener { popup.dismiss(); action() }
+             }, LinearLayout.LayoutParams(-1, dp(46)))
+         }
+-        option(if (toolPreferences.isFavorite(info.id)) "☆  Hapus dari favorit" else "★  Tambahkan ke favorit") {
++        option(if (toolPreferences.isFavorite(info.id)) "☆ Hapus dari favorit" else "★ Tambahkan ke favorit") {
+             toggleFavorite(info.id); showAllTools(toolCenterFilter)
+         }
+         option("Buka ${info.name}") { openTool(info.id) }
+@@ -2459,7 +2493,7 @@
+         box.addView(label(value, 13f).apply { setTextColor(Color.rgb(145,145,145)); setPadding(0,dp(3),0,0) })
+         box.addView(subLabel(desc, 11f).apply { visibility = if (desc.isBlank()) View.GONE else View.VISIBLE })
+         card.addView(box)
+-        card.addView(TextView(this).apply { text = "›"; textSize = 30f; setTextColor(Color.rgb(130,130,130)); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(34), dp(54)) })
++        card.addView(TextView(this).apply { asMdi("chevron-right"); textSize = 22f; setTextColor(Color.rgb(130,130,130)); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(34), dp(54)) })
+         return card.apply { layoutParams = LinearLayout.LayoutParams(-1,-2).apply { bottomMargin=dp(12) } }
+     }
+ 
+@@ -2704,14 +2738,14 @@
+     }
+ 
+     internal fun button(text: String, onClick: () -> Unit): Button = Button(this).apply {
+-        this.text = text
++        this.text = MdiText.iconize(this@MainActivity, text)
+         textSize = 14f
+         minHeight = dp(Ds.TOUCH_MIN)
+         setPadding(dp(Ds.SPACE_LG), dp(Ds.SPACE_XS), dp(Ds.SPACE_LG), dp(Ds.SPACE_XS))
+         setStateListAnimator(null)
+         isAllCaps = false
+         letterSpacing = 0.01f
+-        contentDescription = text
++        contentDescription = MdiText.plain(text)
+         isFocusable = true
+         // Hierarki otomatis: aksi utama terisi, aksi pendukung (Salin/Hapus/Reset...) outline.
+         if (isSecondaryAction(text)) styleAsSecondary(this) else styleAsPrimary(this)
+@@ -3216,7 +3250,7 @@
+             "🔌 Relay — ON / OFF",
+             "🔘 Push — tekan & tahan",
+             "💡 Slider / PWM Dimmer",
+-            "⚙️ Atur MQTT Studio"
++            "Atur MQTT Studio"
+         )
+         AlertDialog.Builder(this)
+             .setTitle("Tambah Widget")
+@@ -3672,8 +3706,12 @@
+             background = bg(panel2, 18, line)
+         }
+         val top = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
+-        top.addView(TextView(this).apply {
+-            text = icon; textSize = 21f; gravity = Gravity.CENTER; setTextColor(textMain)
++        val ledIconName = when (icon) {
++            "💡" -> "lightbulb-outline"; "▦" -> "view-grid-outline"; "↔" -> "swap-horizontal"
++            "◉" -> "palette-outline"; "◷" -> "timer-outline"; else -> if (MdiGlyphs.has(icon)) icon else "circle-small"
++        }
++        top.addView(MdiIconView(this).apply {
++            setIconName(ledIconName); setIconSize(21f); setTextColor(textMain)
+             background = bg(panel, 12, line)
+         }, LinearLayout.LayoutParams(dp(42), dp(42)).apply { rightMargin = dp(12) })
+         vald/pattern") ?: "")
+@@ -4334,7 +4372,7 @@
+         info.addView(label(f.name, 14f, true))
+         info.addView(subLabel(if (isDir) "Folder" else "${bytesText(f.length())}  •  ${SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date(f.lastModified()))}", 10f))
+         card.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+-        val more = TextView(this).apply { text = "⋮"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(textMuted); contentDescription = "Aksi ${f.name}"; isClickable = true; isFocusable = true; setPadding(dp(8), 0, dp(8), 0); setOnClickListener { showFileActions(f, parent) } }
++        val more = TextView(this).apply { asMdi("dots-vertical"); textSize = 22f; gravity = Gravity.CENTER; setTextColor(textMuted); contentDescription = "Aksi ${f.name}"; isClickable = true; isFocusable = true; setPadding(dp(8), 0, dp(8), 0); setOnClickListener { showFileActions(f, parent) } }
+         card.addView(more, LinearLayout.LayoutParams(dp(42), dp(48)))
+         card.setOnClickListener { if (isDir) fileManager(f) else showFileActions(f, parent) }
+         return card.apply { layoutParams = LinearLayout.LayoutParams(-1, dp(66)).apply { bottomMargin = dp(7) } }
+@@ -5595,7 +5633,7 @@
+             })
+             row.addView(textBox)
+             row.addView(TextView(this).apply {
+-                text = "›"
++                asMdi("chevron-right")
+                 textSize = 25f
+                 setTextColor(textMuted)
+                 gravity = Gravity.CENTER
+@@ -5754,7 +5792,7 @@
+         }
+         fileCard.addView(editorNameLabel)
+         fileCard.addView(TextView(this).apply {
+-            text = "✎"
++            asMdi("pencil-outline")
+             textSize = 22f
+             setTextColor(textMuted)
+             gravity = Gravity.CENTER
+@@ -5764,7 +5802,7 @@
+         header.addView(fileCard)
+ 
+         val tree = TextView(this).apply {
+-            text = "☰"
++            asMdi("menu")
+             textSize = 22f
+             gravity = Gravity.CENTER
+             setTextColor(textMain)
+@@ -6084,7 +6122,9 @@
+         actions.forEach { (txt, click) ->
+             val parts = txt.split("\n")
+             val v = TextView(this).apply {
+-                text = "${parts[0]}\n${parts[1]}"
++                text = MdiText.iconize(this@MainActivity, parts[0]).let { ic ->
++                    android.text.SpannableStringBuilder(ic).append("\n").append(parts[1])
++                }
+                 textSize = 11f
+                 gravity = Gravity.CENTER
+                 setTextColor(textMain)
+@@ -6353,6 +6393,17 @@
+     internal var ghFileTotal = 0
+     internal var ghRetry: (() -> Unit)? = null
+     internal var ghLastResult: GhResult? = null
++    // Status upload dipertahankan di sini supaya layar bisa dipulihkan saat pengguna keluar-masuk halaman/aplikasi.
++    internal var ghLastProgress: GhProgress? = null
++    internal val ghProgressDetails = arrayOfNulls<String>(5)
++    internal var ghPendingResult: GhResult? = null
++    internal var ghPendingError: Throwable? = null
++    internal var ghDurationSec = 0
++    internal var ghRunKind = ""
++    internal var ghRunOwner = ""
++    internal var ghRunRepo = ""
++    internal var ghRunBranch = ""
++    internal var appInForeground = true
+     internal var ghUserValue = ""
+     internal var ghRepoValue = ""
+     internal var ghTokenValue = ""
+@@ -6578,14 +6629,15 @@
+ 
+     // ----- pergantian layar -----
+     internal fun ghShow(screen: View, titleText: String) {
+-        val setString("gh_branch", null) ?: "main"
+-        ghSaveToken = prefs.getBoolean("gh_save_token", true)
+-        ghPrivateRepo = prefs.getBoolean("gh_private", true)
+-        ghTokenValue = if (ghSaveToken) prefs.getString("gh_token_enc", null)?.let { GithubTokenVault.decrypt(it) }.orEmpty() else ""
+-        ghCommitValue = prefs.getString("gh_commit", null) ?: "Upload project via GITLS"
+-        ghStage = FrameLayout(this)
+-        content.addView(ghStage, LinearLayout.LayoutParams(-1, -2))
+-        ghShow(ghSettingsScreen(), "Pengaturan GitHub")
++        title.text = titleText
++        val stage = ghStage ?: return
++        stage.removeAllViews()
++        stage.addView(screen, FrameLayout.LayoutParams(-1, -2))
++        screen.alpha = 0f
++        screen.translationY = dp(10).toFloat()
++        screen.animate().alpha(1f).translationY(0f).setDuration(220L)
++            .setInterpolator(android.view.animation.DecelerateInterpolator(1.4f)).start()
++        scroll.scrollTo(0, 0)
+     }
+ 
+     internal fun ghSettingsScreen(): LinearLayout {
+@@ -6933,11 +6985,19 @@
+     internal fun ghStartUpload(kind: String, owner: String, repo: String, branch: String, task: ((GhProgress) -> Unit) -> GhResult) {
+         if (ghRunning) { toast("Upload sedang berjalan"); return }
+         ghRetry = { ghStartUpload(kind, owner, repo, branch, task) }
++        ghRunKind = kind; ghRunOwner = owner; ghRunRepo = repo; ghRunBranch = branch
++        ghPendingResult = null; ghPendingError = null; ghLastProgress = null
++        ghProgressDetails.fill(null)
++        GithubUploadNotifier.cancelDone(this)
++        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
++            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 3002)
++        }
+         ghShow(ghProgressScreen(kind, owner, repo, branch), "Proses Upload")
+         ghRunning = true
+         ghCurrentStep = 0
+         ghFileTotal = 0
+         ghStartedAt = SystemClock.elapsedRealtime()
++        GithubUploadNotifier.startKeepAlive(this)
+         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+         ghHandler.removeCallbacks(ghTicker)
+         ghHandler.postDelayed(ghTicker, 1000L)
+@@ -6946,17 +7006,85 @@
+             val result = runCatching { task { p -> runOnUiThread { ghOnProgress(p) } } }
+             runOnUiThread {
+                 ghRunning = false
++                ghDurationSec = ((SystemClock.elapsedRealtime() - ghStartedAt) / 1000L).toInt()
+                 ghHandler.removeCallbacks(ghTicker)
+                 window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+-                result.onSuccess { ghShowResult(it) }.onFailure { ghShowFailure(it) }
++                GithubUploadNotifier.stopKeepAlive(this)
++                result.onSuccess { ghFinishSuccess(it) }.onFailure { ghFinishFailure(it) }
++            }
++        }
++    }
++
++    /** True bila layar hasil/progres GitHub sedang benar-benar dilihat pengguna. */
++    internal fun ghScreenVisible(): Boolean =
++        appInForeground && currentPage == "GitHub Publisher" && ghStage?.isAttachedToWindow == true
++
++    internal fun ghFinishSuccess(result: GhResult) {
++        ghPendingResult = result
++        ghLastResult = result
++        if (ghScreenVisible()) { ghShowResult(result); return }
++        val sec = ghDurationSec
++        val dur = if (sec >= 60) "${sec / 60} mnt ${sec % 60} dtk" else "$sec dtk"
++        GithubUploadNotifier.done(this, true, "Upload GitHub berhasil",
++            "${result.owner}/${result.repo} • ${result.files} file • $dur. Ketuk untuk melihat hasil.")
++    }
++
++    internal fun ghFinishFailure(error: Throwable) {
++        ghPendingError = error
++        if (ghScreenVisible()) { ghShowFailure(error); return }
++        GithubUploadNotifier.done(this, false, "Upload GitHub gagal", ghFriendlyError(error))
++    }
++
++    /** Dipanggil saat GitHub Publisher dibuka lagi: pulihkan layar sesuai status upload terakhir. Return true bila dipulihkan. */
++    internal fun ghRestoreIfNeeded(): Boolean {
++        val doneResult = ghPendingResult
++        val doneError = ghPendingError
++        return when {
++            ghRunning -> { ghRestoreProgressScreen(); true }
++            doneResult != null -> { ghShowResult(doneResult); true }
++            doneError != null -> { ghRestoreProgressScreen(); ghShowFailure(doneError); true }
++            else -> false
++        }
++    }
++
++    internal fun ghRestoreProgressScreen() {
++        ghShow(ghProgressScreen(ghRunKind, ghRunOwner, ghRunRepo, ghRunBranch), "Proses Upload")
++        val last = ghLastProgress
++        if (last != null) {
++            ghApplyProgress(last)
++            for (i in 0..4) {
++                if (i == 2 && last.step > 2) continue
++                val d = ghProgressDetails[i] ?: continue
++                if (i > last.step) continue
++                ghStepDetails[i].text = d
++                ghStepDetails[i].visibility = View.VISIBLE
+             }
+         }
++        val sec = ((SystemClock.elapsedRealtime() - ghStartedAt) / 1000L).toInt()
++        ghElapsedText?.text = "Berjalan %02d:%02d".format(sec / 60, sec % 60)
+     }
+ 
+     internal fun ghOnProgress(p: GhProgress) {
+-        if (ghStage?.isAttachedToWindow != true || ghStepViews.size < 5) return
+         if (p.step < ghCurrentStep) return
+         ghCurrentStep = p.step
++        ghLastProgress = p
++        if (p.step == 2 && p.total > 0) ghFileTotal = p.total
++        if (p.detail.isNotBlank() && !(p.step == 2 && p.total == 0)) ghProgressDetails[p.step.coerceIn(0, 4)] = p.detail
++        val label = if (p.step == 2 && p.total > 0) "Mengunggah file (${p.current}/${p.total})" else ghStepTitle(p.step, ghRunBranch)
++        GithubUploadNotifier.progress(this, label, ghProgressPercent(p))
++        ghApplyProgress(p)
++    }
++
++    internal fun ghProgressPercent(p: GhProgress): Int = when (p.step) {
++        0 -> 4
++        1 -> 12
++        2 -> if (p.total > 0) 15 + (70 * (p.current - 1).coerceAtLeast(0)) / p.total else 15
++        3 -> 88
++        else -> 96
++    }
++
++    internal fun ghApplyProgress(p: GhProgress) {
++        if (ghStage?.isAttachedToWindow != true || ghStepViews.size < 5) return
+         for (i in 0..4) {
+             val state = when {
+                 i < p.step -> StepStateView.DONE
+@@ -6969,7 +7097,6 @@
+             else ghStepTitles[i].setTypeface(null, android.graphics.Typeface.NORMAL)
+         }
+         if (p.step == 2 && p.total > 0) {
+-            ghFileTotal = p.total
+             ghStepTitles[2].text = "Mengunggah file (${p.current}/${p.total})"
+         }
+         if (p.step > 2 && ghFileTotal > 0) {
+@@ -6981,19 +7108,14 @@
+             ghStepDetails[p.step].text = p.detail
+             ghStepDetails[p.step].visibility = View.VISIBLE
+         }
+-        val pct = when (p.step) {
+-            0 -> 4
+-            1 -> 12
+-            2 -> if (p.total > 0) 15 + (70 * (p.current - 1).coerceAtLeast(0)) / p.total else 15
+-            3 -> 88
+-            else -> 96
+-        }
++        val pct = ghProgressPercent(p)
+         ghRing?.let { it.indeterminate = false; it.setProgress(pct.toFloat()) }
+         ghPercentText?.text = "$pct%"
+     }
+ 
+     internal fun ghShowFailure(error: Throwable) {
+         if (ghStage?.isAttachedToWindow != true) return
++        ghPendingError = null
+         val failedStep = ghCurrentStep.coerceIn(0, 4)
+         if (ghStepViews.size == 5) {
+             ghStepViews[failedStep].setState(StepStateView.FAILED)
+@@ -7036,7 +7158,8 @@
+     internal fun ghShowResult(result: GhResult) {
+         if (ghStage?.isAttachedToWindow != true) return
+         ghLastResult = result
+-        val elapsed = ((SystemClock.elapsedRealtime() - ghStartedAt) / 1000L).toInt()
++        ghPendingResult = null
++        val elapsed = ghDurationSec
+         val screen = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER_HORIZONTAL; setPadding(dp(2), dp(14), dp(2), dp(24)) }
+ 
+         val badge = SuccessBadgeView(this).apply { inkColor = ghInk; onInkColor = ghOnInk }
+@@ -8959,7 +9082,7 @@
+     internal fun renderQrScanner() {
+         content.removeAllViews()
+         // Tombol kanan atas khusus untuk langsung membuka pemindai QR kamera.
+-        action.text = "⌗"
++        action.asMdi("qrcode-scan")
+         action.textSize = 21f
+         action.contentDescription = "Scan QR"
+         action.setOnClickListener { scanQrWithCamera() }
+@@ -8979,7 +9102,7 @@
+         background = bg(panel2, 18)
+         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) }
+         addView(TextView(this@MainActivity).apply {
+-            text = "⛶"; textSize = 32f; gravity = Gravity.CENTER; setTextColor(textMuted)
++            asMdi("fullscreen"); textSize = 32f; gravity = Gravity.CENTER; setTextColor(textMuted)
+         }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(14) })
+         addView(label("QR Scanner", 17f, true).apply { gravity = Gravity.CENTER })
+         addView(subLabel("Scan kode QR atau buat QR sendiri.", 12f).apply { gravity = Gravity.CENTER })
+@@ -9001,7 +9124,7 @@
+             setPadding(dp(6), 0, 0, 0)
+         }, LinearLayout.LayoutParams(0, -2, 1f))
+         addView(TextView(this@MainActivity).apply {
+-            text = if (qrSourceExpanded) "⌃" else "⌄"; textSize = 13f; setTextColor(textMuted)
++            asMdi(if (qrSourceExpanded) "chevron-up" else "chevron-down"); textSize = 13f; setTextColor(textMuted)
+         })
+     }
+ 
+@@ -9357,7 +9480,7 @@
+         val cat = convCategories.find { it.id == convCategory }
+         if (cat == null) {
+             title.text = "Konversi File"
+-            action.text = "⋮"; action.textSize = 25f; action.setOnClickListener { showAbout() }
++            action.asMdi("dots-vertical"); action.textSize = 25f; action.setOnClickListener { showAbout() }
+             back.setOnClickListener { navigateBack() }
+             renderConvHome()
+             return
+@@ -9376,7 +9499,7 @@
+             }
+             "done" -> {
+                 title.text = "Selesai"
+-                action.text = "⋮"; action.textSize = 25f; action.setOnClickListener { showAbout() }
++                action.asMdi("dots-vertical"); action.textSize = 25f; action.setOnClickListener { showAbout() }
+                 renderConvDone(cat)
+             }
+             else -> {
+@@ -9425,7 +9548,7 @@
+             addView(label(c.title, 15f, true).apply { setPadding(dp(2), 0, dp(2), dp(1)) })
+             addView(subLabel(c.desc, 11f))
+         }, LinearLayout.LayoutParams(0, -2, 1f))
+-        addView(TextView(this@MainActivity).apply { text = "›"; textSize = 22f; setTextColor(textMuted) })
++        addView(TextView(this@MainActivity).apply { asMdi("chevron-right"); textSize = 22f; setTextColor(textMuted) })
+     }
+ 
+     internal fun renderConvForm(cat: ConvCategory) {
+@@ -9462,7 +9585,7 @@
+         isClickable = true
+         setOnClickListener { convStage = "pickfile"; renderConv() }
+         if (convPickedUri != null) {
+-            addView(TextView(this@MainActivity).apply { text = "✓"; textSize = 22f; setTextColor(textMain); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
++            addView(TextView(this@MainActivity).apply { asMdi("check"); textSize = 22f; setTextColor(textMain); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(6) })
+             addView(label(convPickedName ?: "File terpilih", 13f, true).apply { gravity = Gravity.CENTER })
+         } else {
+             addView(TextView(this@MainActivity).apply { text = "▤"; textSize = 26f; setTextColor(textMuted); gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-2, -2).apply { bottomMargin = dp(8) })
+@@ -9491,7 +9614,7 @@
+             setTextColor(if (convToFormat == null) textMuted else textMain)
+         }, LinearLayout.LayoutParams(0, -2, 1f))
+         addView(TextView(this@MainActivity).apply {
+-            text = if (convToExpanded) "⌃" else "⌄"; textSize = 13f; setTextColor(textMuted)
++            asMdi(if (convToExpanded) "chevron-up" else "chevron-down"); textSize = 13f; setTextColor(textMuted)
+         })
+     }
+ 
+@@ -9563,7 +9686,7 @@
+                     addView(label(name, 14f, true).apply { setPadding(dp(4), 0, dp(4), 0) })
+                     addView(subLabel(sub, 11f).apply { setPadding(dp(4), 0, dp(4), 0) })
+                 }, LinearLayout.LayoutParams(0, -2, 1f))
+-                addView(TextView(this@MainActivity).apply { text = "›"; textSize = 20f; setTextColor(textMuted) })
++                addView(TextView(this@MainActivity).apply { asMdi("chevron-right"); textSize = 20f; setTextColor(textMuted) })
+             })
+         }
+     }
+@@ -9602,7 +9725,7 @@
+ 
+     internal fun renderConvDone(cat: ConvCategory) {
+         content.addView(TextView(this).apply {
+-            text = "✓"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
++            asMdi("check"); textSize = 26f; gravity = Gravity.CENTER; setTextColor(Color.WHITE)
+             background = bg(Color.rgb(17, 17, 19), 40)
+         }, LinearLayout.LayoutParams(dp(64), dp(64)).apply { gravity = Gravity.CENTER_HORIZONTAL; topMargin = dp(20); bottomMargin = dp(14) })
+         content.addView(label("Konversi Berhasil", 18f, true).apply { gravity = Gravity.CENTER })
+@@ -9984,7 +10107,7 @@
+         texts.addView(label(dir.name, 15f, true))
+         texts.addView(subLabel("${files.size} item  •  ${SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()).format(Date(modified))}", 10f))
+         top.addView(texts, LinearLayout.LayoutParams(0, -2, 1f))
+-        top.addView(TextView(this).apply { text = "›"; textSize = 27f; setTextColor(textMuted); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(34), dp(44)) })
++        top.addView(TextView(this).apply { asMdi("chevron-right"); textSize = 22f; setTextColor(textMuted); gravity = Gravity.CENTER; layoutParams = LinearLayout.LayoutParams(dp(34), dp(44)) })
+         card.addView(top)
+         val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0) }
+         fun small(text: String, action: () -> Unit) = TextView(this).apply { this.text = text; textSize = 11f; gravity = Gravity.CENTER; setTextColor(textMain); background = bg(panel, 10, line); isClickable = true; isFocusable = true; setPadding(dp(10), 0, dp(10), 0); setOnClickListener { action() } }
+diff -ruN orig/app/src/main/java/com/example/aidetest/MdiGlyphs.kt proj/app/src/main/java/com/example/aidetest/MdiGlyphs.kt
+--- orig/app/src/main/java/com/example/aidetest/MdiGlyphs.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/MdiGlyphs.kt	2026-09-29 11:06:20.056659637 +0000
+@@ -4,6 +4,15 @@
+     private fun mdi(codePoint: Int): String = String(Character.toChars(codePoint))
+ 
+     private val map: Map<String, String> = mapOf(
++        "auto-fix" to mdi(0xF0068),
++        "backspace-outline" to mdi(0xF0B5C),
++        "circle-slice-8" to mdi(0xF0AA5),
++        "fullscreen" to mdi(0xF0293),
++        "lightbulb-outline" to mdi(0xF0336),
++        "music-note" to mdi(0xF0387),
++        "qrcode-scan" to mdi(0xF0433),
++        "radiobox-marked" to mdi(0xF043E),
++        "video-outline" to mdi(0xF0BDC),
+         "access-point-network" to mdi(0xF0002),
+         "account-outline" to mdi(0xF0013),
+         "account-search-outline" to mdi(0xF0935),
+@@ -227,6 +236,7 @@
+         "source-repository" to mdi(0xF0CCF),
+         "speedometer" to mdi(0xF04C5),
+         "star" to mdi(0xF04CE),
++        "star-outline" to mdi(0xF04D2),
+         "stop" to mdi(0xF04DB),
+         "swap-horizontal" to mdi(0xF04E1),
+         "swap-horizontal-bold" to mdi(0xF0BCD),
+diff -ruN orig/app/src/main/java/com/example/aidetest/MdiIconView.kt proj/app/src/main/java/com/example/aidetest/MdiIconView.kt
+--- orig/app/src/main/java/com/example/aidetest/MdiIconView.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/MdiIconView.kt	2026-09-29 11:04:52.977244887 +0000
+@@ -39,4 +39,23 @@
+             Typeface.createFromAsset(context.assets, FONT)
+         }
+     }
++
++    /** Ganti ikon dengan animasi "pop" halus (dipakai untuk favorit dan navigasi). */
++    fun popTo(name: String, overshoot: Float = 1.25f) {
++        if (glyphName == name) return
++        setIconName(name)
++        animate().cancel()
++        scaleX = 0.6f; scaleY = 0.6f
++        animate().scaleX(1f).scaleY(1f).setDuration(320L)
++            .setInterpolator(android.view.animation.OvershootInterpolator(overshoot)).start()
++    }
++
++    /** Efek membal singkat tanpa mengganti ikon. */
++    fun bounce() {
++        animate().cancel()
++        animate().scaleX(1.18f).scaleY(1.18f).setDuration(90L).withEndAction {
++            animate().scaleX(1f).scaleY(1f).setDuration(220L)
++                .setInterpolator(android.view.animation.OvershootInterpolator(2.2f)).start()
++        }.start()
++    }
+ }
+diff -ruN orig/app/src/main/java/com/example/aidetest/MdiText.kt proj/app/src/main/java/com/example/aidetest/MdiText.kt
+--- orig/app/src/main/java/com/example/aidetest/MdiText.kt	1970-01-01 00:00:00.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/MdiText.kt	2026-09-29 11:05:52.098077219 +0000
+@@ -0,0 +1,85 @@
++package com.example.aidetest
++
++import android.content.Context
++import android.graphics.Typeface
++import android.text.SpannableStringBuilder
++import android.text.Spanned
++import android.text.style.RelativeSizeSpan
++import android.widget.TextView
++
++/** Mengubah simbol/emoji di awal teks menjadi ikon vektor MDI (bukan emoji). */
++object MdiText {
++    private val SYMBOLS: Map<String, String> = mapOf(
++        "💡" to "lightbulb-outline",
++        "🔎" to "magnify",
++        "📡" to "radar",
++        "🎛" to "tune-variant",
++        "📊" to "chart-line",
++        "📶" to "wifi",
++        "🔄" to "refresh",
++        "🌐" to "web",
++        "📬" to "send",
++        "🔌" to "usb-port",
++        "🖥" to "console",
++        "📦" to "package-variant-closed",
++        "🔘" to "radiobox-marked",
++        "⚠" to "alert-outline",
++        "✓" to "check",
++        "✎" to "pencil-outline",
++        "☰" to "menu",
++        "⌫" to "backspace-outline",
++        "⌕" to "magnify",
++        "✦" to "auto-fix",
++        "ϟ" to "flash-outline",
++        "⌗" to "qrcode-scan",
++        "⛶" to "fullscreen",
++        "⌃" to "chevron-up",
++        "⌄" to "chevron-down",
++        "⌂" to "home-outline",
++        "▣" to "content-save-outline",
++        "▱" to "folder-open-outline",
++        "▢" to "content-copy",
++        "▤" to "file-document-outline",
++        "▧" to "image-outline",
++        "♪" to "music-note",
++        "▶" to "play",
++        "▾" to "download",
++        "↔" to "swap-horizontal",
++        "×" to "close",
++        "★" to "star",
++        "☆" to "star-outline",
++        "◍" to "circle-slice-8",
++    )
++    private val REGEX = Regex("^(" + SYMBOLS.keys.joinToString("|") { Regex.escape(it) } + ")\\uFE0F?\\s*")
++
++    private var face: Typeface? = null
++    fun typeface(context: Context): Typeface =
++        face ?: Typeface.createFromAsset(context.applicationContext.assets, "fonts/materialdesignicons-webfont.ttf").also { face = it }
++
++    /** Hilangkan simbol awal; dipakai untuk contentDescription. */
++    fun plain(text: String): String = REGEX.replaceFirst(text, "")
++
++    /** "💡 Judul" -> [ikon] + "  Judul"; teks tanpa simbol dikembalikan apa adanya. */
++    fun iconize(context: Context, text: String): CharSequence {
++        val m = REGEX.find(text) ?: return text
++        val name = SYMBOLS[m.groupValues[1]] ?: return text
++        val sb = SpannableStringBuilder(MdiGlyphs.glyph(name))
++        val tf = typeface(context)
++        sb.setSpan(MdiSpan(tf), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        sb.setSpan(RelativeSizeSpan(1.3f), 0, sb.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
++        sb.append("  ").append(text.substring(m.value.length))
++        return sb
++    }
++}
++
++private fun TypefaceSpan(tf: Typeface) = object : android.text.style.MetricAffectingSpan() {
++    override fun updateDrawState(p: android.text.TextPaint) { p.typeface = tf }
++    override fun updateMeasureState(p: android.text.TextPaint) { p.typeface = tf }
++}
++
++/** Jadikan TextView menampilkan satu ikon MDI saja. */
++fun TextView.asMdi(name: String) {
++    typeface = MdiText.typeface(context)
++    text = MdiGlyphs.glyph(name)
++    includeFontPadding = false
++}
+diff -ruN orig/app/src/main/java/com/example/aidetest/tools/calculator/CalculatorTools.kt proj/app/src/main/java/com/example/aidetest/tools/calculator/CalculatorTools.kt
+--- orig/app/src/main/java/com/example/aidetest/tools/calculator/CalculatorTools.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/tools/calculator/CalculatorTools.kt	2026-09-29 11:05:52.131132114 +0000
+@@ -112,7 +112,7 @@
+             gravity = Gravity.CENTER_VERTICAL
+         }
+         val arrow = TextView(this).apply {
+-            text = "⌄"
++            asMdi("chevron-down")
+             textSize = 22f
+             setTextColor(textMuted)
+             gravity = Gravity.CENTER
+diff -ruN orig/app/src/main/java/com/example/aidetest/tools/developer/DeveloperTools.kt proj/app/src/main/java/com/example/aidetest/tools/developer/DeveloperTools.kt
+--- orig/app/src/main/java/com/example/aidetest/tools/developer/DeveloperTools.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/tools/developer/DeveloperTools.kt	2026-09-29 11:08:54.348955975 +0000
+@@ -102,6 +102,7 @@
+         ghCommitValue = prefs.getString("gh_commit", null) ?: "Upload project via GITLS"
+         ghStage = FrameLayout(this)
+         content.addView(ghStage, LinearLayout.LayoutParams(-1, -2))
++        if (ghRestoreIfNeeded()) return
+         ghShow(ghSettingsScreen(), "Pengaturan GitHub")
+     }
+ 
+diff -ruN orig/app/src/main/java/com/example/aidetest/tools/file/FileTools.kt proj/app/src/main/java/com/example/aidetest/tools/file/FileTools.kt
+--- orig/app/src/main/java/com/example/aidetest/tools/file/FileTools.kt	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/java/com/example/aidetest/tools/file/FileTools.kt	2026-09-29 11:06:06.645792695 +0000
+@@ -91,7 +91,7 @@
+         content.addView(toolHeader("File Manager", dir.name, "folder-multiple-outline"), LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(9) })
+ 
+         val path = TextView(this).apply {
+-            text = "⌂  ${dir.absolutePath}"
++            text = MdiText.iconize(context, "⌂  ${dir.absolutePath}")
+             textSize = 11f
+             setTextColor(textMuted)
+             setPadding(dp(12), dp(10), dp(12), dp(10))
+diff -ruN orig/app/src/main/res/layout/activity_main.xml proj/app/src/main/res/layout/activity_main.xml
+--- orig/app/src/main/res/layout/activity_main.xml	2026-09-29 09:40:32.000000000 +0000
++++ proj/app/src/main/res/layout/activity_main.xml	2026-09-29 11:11:48.172097446 +0000
+@@ -162,11 +162,11 @@
+             android:paddingEnd="4dp">
+ 
+             <LinearLayout android:id="@+id/navHome" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
+-                <ImageView android:id="@+id/navHomeIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_home" android:contentDescription="Beranda" />
++                <com.example.aidetest.MdiIconView android:id="@+id/navHomeIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Beranda" />
+                 <TextView android:id="@+id/navHomeLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Beranda" android:textColor="#17202A" android:textSize="10sp" />
+             </LinearLayout>
+             <LinearLayout android:id="@+id/navTools" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
+-                <ImageView android:id="@+id/navToolsIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_grid" android:contentDescription="Tools" />
++                <com.example.aidetest.MdiIconView android:id="@+id/navToolsIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Tools" />
+                 <TextView android:id="@+id/navToolsLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Tools" android:textColor="#8A96A3" android:textSize="10sp" />
+             </LinearLayout>
+ 
+@@ -185,11 +185,11 @@
+                 android:contentDescription="Tambah" />
+ 
+             <LinearLayout android:id="@+id/navFavorite" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
+-                <ImageView android:id="@+id/navFavoriteIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_star" android:contentDescription="Favorit" />
++                <com.example.aidetest.MdiIconView android:id="@+id/navFavoriteIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Favorit" />
+                 <TextView android:id="@+id/navFavoriteLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Favorit" android:textColor="#8A96A3" android:textSize="10sp" />
+             </LinearLayout>
+             <LinearLayout android:id="@+id/navSettings" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:gravity="center" android:orientation="vertical" android:paddingTop="7dp" android:paddingBottom="4dp">
+-                <ImageView android:id="@+id/navSettingsIcon" android:layout_width="24dp" android:layout_height="24dp" android:src="@drawable/ic_settings" android:contentDescription="Pengaturan" />
++                <com.example.aidetest.MdiIconView android:id="@+id/navSettingsIcon" android:layout_width="28dp" android:layout_height="26dp" android:textSize="23sp" android:textColor="#8A96A3" android:contentDescription="Pengaturan" />
+                 <TextView android:id="@+id/navSettingsLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="1dp" android:text="Pengaturan" android:textColor="#8A96A3" android:textSize="10sp" />
+             </LinearLayout>
+         </LinearLayout>
