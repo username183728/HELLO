@@ -47,3 +47,16 @@ test -n "$version_code" || { echo "Could not read versionCode"; exit 1; }
 echo "GITLS versionName: $version_name"
 echo "GITLS versionCode: $version_code"
 echo "Project structure check: OK"
+
+
+# Keep the distributable source tree clean: no generated documentation/log artifacts.
+if find . -type f \( -name '*.md' -o -name '*.txt' -o -name '*.log' \) \
+    ! -path './.git/*' ! -path './.gradle/*' | grep -q .; then
+  echo "Unexpected documentation/text/log artifact found in project tree."
+  find . -type f \( -name '*.md' -o -name '*.txt' -o -name '*.log' \) \
+    ! -path './.git/*' ! -path './.gradle/*'
+  exit 1
+fi
+
+grep -q 'compileSdkVersion 36' app/build.gradle || { echo "compileSdkVersion 36 missing"; exit 1; }
+grep -q 'targetSdkVersion 36' app/build.gradle || { echo "targetSdkVersion 36 missing"; exit 1; }
