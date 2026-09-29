@@ -102,7 +102,6 @@ fun MainActivity.githubZipTool() {
         ghCommitValue = prefs.getString("gh_commit", null) ?: "Upload project via GITLS"
         ghStage = FrameLayout(this)
         content.addView(ghStage, LinearLayout.LayoutParams(-1, -2))
-        if (ghRestoreIfNeeded()) return
         ghShow(ghSettingsScreen(), "Pengaturan GitHub")
     }
 
