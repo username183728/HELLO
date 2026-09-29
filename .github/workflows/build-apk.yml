@@ -45,13 +45,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # sdkmanager exits normally after consuming the answers; `yes` can
+          # receive SIGPIPE when that happens. Do not let that expected
+          # SIGPIPE from the producer fail the workflow.
+          set +o pipefail
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null
+          status=${PIPESTATUS[1]}
+          set -o pipefail
+          if [ "$status" -ne 0 ]; then
+            echo "sdkmanager --licenses failed with exit code $status"
+            exit "$status"
+          fi
 
       - name: Install Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT"             "platform-tools"             "platforms;android-36"             "build-tools;35.0.0"
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0"
 
       - name: Set up Gradle 8.11.1
         uses: gradle/actions/setup-gradle@v5
