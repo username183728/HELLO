@@ -2,11 +2,12 @@
 buildscript {
     ext.kotlin_version = '2.0.21'
     repositories {
+        google()
+        mavenCentral()
+        // Mirrors are fallback-only. Official repositories must be queried first.
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/public/' }
         maven { url 'https://maven.aliyun.com/repository/google' }
-        google()
-        mavenCentral()
     }
     dependencies {
         classpath 'com.android.tools.build:gradle:8.9.1'
@@ -16,11 +17,12 @@ buildscript {
 
 allprojects {
     repositories {
+        google()
+        mavenCentral()
+        // Mirrors are fallback-only. Official repositories must be queried first.
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
         maven { url 'https://maven.aliyun.com/repository/public/' }
         maven { url 'https://maven.aliyun.com/repository/google' }
-        google()
-        mavenCentral()
     }
 }
 
